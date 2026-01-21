@@ -96,44 +96,31 @@ class XunfeiASRService:
                                 break
                                 
                             msg_json = json.loads(msg)
-                            # print(f"Received from Xunfei: {str(msg_json)[:200]}...", flush=True)
                             
                             action = msg_json.get("action")
+                            msg_type = msg_json.get("msg_type")
                             code = msg_json.get("code")
                             
-                            if code != "0":
+                            if code and code != "0":
                                 print(f"ASR Error Code: {code}, Msg: {msg_json}", flush=True)
-                                # 不一定立即退出，有些错误可能是非致命的
-                                if code != "00000": # 假设 0 是成功
-                                     pass 
 
-                            if action == "result":
-                                data_str = msg_json.get("data")
-                                if data_str:
+                            if msg_type == "result" or action == "result":
+                                data = msg_json.get("data")
+                                if data:
                                     try:
-                                        # data 字段通常是一个 JSON 字符串，需要再次解析
-                                        data = json.loads(data_str)
+                                        # 如果 data 是字符串，则解析；如果是字典，直接使用
+                                        if isinstance(data, str):
+                                            data = json.loads(data)
                                         
-                                        # 解析 RTASR 结果结构 (需要根据实际返回调整)
-                                        # 假设结构: {"cn": {"st":..., "cw": [...]}, "seg_id": ...}
-                                        # 或者: {"cw": [{"w": "你好", ...}]}
+                                        # 解析 RTASR 结果结构
+                                        # 结构: {"cn": {"st":..., "cw": [...]}, "seg_id": ...}
                                         
-                                        # 尝试提取中文文本
                                         text = ""
-                                        is_final = False # RTASR 通常是流式的，没有明确的“一句话结束”标志，或者通过 seg_id 变化判断
                                         
                                         cn_data = data.get("cn", {})
                                         st_data = cn_data.get("st", {})
-                                        type_val = st_data.get("type") # 0:最终结果, 1:中间结果(动态修正)
+                                        type_val = st_data.get("type") # 0:最终结果, 1:中间结果
                                         
-                                        # 提取词语
-                                        # 结构可能是 data['cn']['st']['rt'][0]['ws'][0]['cw'][0]['w']
-                                        # 但 Demo 没给解析逻辑，我们先尝试一种通用的深度搜索或假设结构
-                                        
-                                        # 观察日志后修正。先尝试打印完整 data 以便调试
-                                        # print(f"RTASR Data: {data}", flush=True)
-                                        
-                                        # 简化的解析逻辑 (适配常见 RTASR 格式)
                                         st = st_data
                                         if "rt" in st:
                                             for rt in st["rt"]:
@@ -143,48 +130,12 @@ class XunfeiASRService:
                                                             text += cw["w"]
                                         
                                         if text:
-                                            # type=0 (最终), type=1 (中间)
-                                            # 前端处理逻辑: 
-                                            # 我们可以直接发给前端，让前端拼接
-                                            # 但为了兼容之前的 ChatView 逻辑 (append / replace)，我们需要告诉前端是否是中间结果
-                                            
-                                            # RTASR 的中间结果通常会带 pgs (progress?) 
-                                            # 或者我们可以简单地只发最终结果？不行，用户要“边说边显”
-                                            
-                                            # 策略：直接发送文本。
-                                            # 注意：RTASR 的中间结果可能会不断刷新同一段话。
-                                            # 如果 type==1，说明是中间结果（可能会变）。
-                                            # 如果 type==0，说明是这一句的最终结果。
-                                            
                                             print(f"ASR Text: {text}, Type: {type_val}", flush=True)
-                                            
-                                            # 构造发给前端的数据
-                                            # 为了兼容 ChatView，我们可以总是发 text
-                                            # 但 ChatView 现在逻辑是：收到 text 就 append
-                                            # 如果 RTASR 发送的是“重复的修正文本”，append 会导致重复
-                                            # 例如： "你" -> "你好" -> "你好吗"
-                                            # ChatView append 后变成 "你你好你好吗"
-                                            
-                                            # 所以我们需要在后端处理去重，或者通知前端清空重写？
-                                            # RTASR 的 type=1 时，通常包含该句的完整当前识别结果
-                                            # 我们可以发送一个标志给前端，让前端知道这是“覆盖更新”还是“追加”
-                                            
-                                            # 现在的 ChatView 逻辑：
-                                            # if (data.text) setInputValue(baseText + data.text)
-                                            # 这其实是“追加”模式（基于 baseText）。
-                                            # 但如果 ws.onmessage 多次触发，每次都是“追加”到 baseText 后面？
-                                            # 不，setInputValue 是 react state。
-                                            # 之前逻辑：setInputValue(prev => prev + data.text) -> 追加
-                                            # 最新逻辑：setInputValue(baseTextRef.current + data.text) -> 这里的 data.text 必须是“当前句子的完整文本”
-                                            
-                                            # 如果 RTASR 返回的是增量（diff），我们需要自己拼接。
-                                            # 如果 RTASR 返回的是全量（当前句），那直接发给前端正好。
-                                            
-                                            # 假设 RTASR 返回的是全量（当前句的完整识别）。
+                                            # 发送给前端，is_final 用于标识是否是句子的最终结果
                                             await callback({"text": text, "is_final": type_val == "0"})
                                             
                                     except Exception as e:
-                                        print(f"Error parsing RTASR data: {e}, Raw: {data_str}", flush=True)
+                                        print(f"Error parsing RTASR data: {e}, Raw Data: {data}", flush=True)
 
                     except Exception as e:
                         print(f"Error receiving from Xunfei: {e}", flush=True)
@@ -194,6 +145,10 @@ class XunfeiASRService:
                     try:
                         # 缓冲区，用于积攒到 1280 bytes
                         buffer = bytearray()
+                        
+                        # 流控变量
+                        start_time = time.time()
+                        bytes_sent = 0
                         
                         async for chunk in audio_generator:
                             if not chunk: continue
@@ -206,8 +161,16 @@ class XunfeiASRService:
                                 buffer = buffer[AUDIO_FRAME_SIZE:]
                                 
                                 await ws.send(frame)
-                                # 严格控制发送间隔，避免发太快
-                                await asyncio.sleep(FRAME_INTERVAL_S) 
+                                bytes_sent += len(frame)
+                                
+                                # 智能流控：仅在发送速度超过实时音频速度时等待
+                                # 16k * 16bit * 1ch = 32000 bytes/s
+                                expected_time = bytes_sent / 32000.0
+                                now = time.time()
+                                wait_time = expected_time - (now - start_time)
+                                
+                                if wait_time > 0.005: # 只有当超前超过 5ms 时才 sleep，避免频繁 sleep
+                                    await asyncio.sleep(wait_time)
                         
                         # 发送剩余数据
                         if len(buffer) > 0:

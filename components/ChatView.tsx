@@ -91,6 +91,7 @@ const ChatView: React.FC<{ initialContext?: string | null; onClearContext?: () =
   // 防止重复点击
   const [isConnecting, setIsConnecting] = useState(false);
   const baseTextRef = useRef(""); // 记录录音开始时的已有文本
+  const ignoreCurrentSegmentRef = useRef(false); // 是否忽略当前正在流转的 ASR 片段（用于用户手动编辑后）
 
   const hasInteracted = messages.length > 0 || isThinking;
 
@@ -139,10 +140,30 @@ const ChatView: React.FC<{ initialContext?: string | null; onClearContext?: () =
         ws.onmessage = (event) => {
             const data = JSON.parse(event.data);
             if (data.text) {
-                 // 后端现在返回的是完整的 session_text (因为关闭了 wpgs 并进行了累积)
-                 // 所以这里直接替换掉当前正在输入的部分
-                 // baseTextRef.current 是录音开始前的文本
-                 setInputValue(baseTextRef.current + data.text);
+                 // 如果用户已经手动干预（编辑）了文本，我们认为用户接管了控制权
+                 // 因此忽略当前 ASR 片段的后续更新，防止覆盖用户的修改
+                 // 直到收到 is_final，标志着当前片段结束，重置 ignore 状态以便接收下一个片段
+                 
+                 if (data.is_final) {
+                     if (!ignoreCurrentSegmentRef.current) {
+                         baseTextRef.current += data.text;
+                     }
+                     // 重置忽略状态，准备接收下一句
+                     ignoreCurrentSegmentRef.current = false;
+                     
+                     // 如果是 final，我们需要确保输入框显示的是最终累积结果
+                     // (如果用户没编辑过，就更新；如果编辑过，baseTextRef 已经是用户编辑后的，这里也不影响)
+                     // 但如果 ignore 是 true，我们不做 setInputValue，保留用户编辑的
+                     if (!ignoreCurrentSegmentRef.current) {
+                         // 此时 baseTextRef 已经包含了 data.text
+                         setInputValue(baseTextRef.current);
+                     }
+                 } else {
+                     // 中间结果
+                     if (!ignoreCurrentSegmentRef.current) {
+                         setInputValue(baseTextRef.current + data.text);
+                     }
+                 }
             }
             if (data.error) {
                 console.error("ASR Error:", data.error);
@@ -481,7 +502,14 @@ const ChatView: React.FC<{ initialContext?: string | null; onClearContext?: () =
                     type="text" 
                     value={inputValue}
                     disabled={isThinking}
-                    onChange={(e) => setInputValue(e.target.value)}
+                    onChange={(e) => {
+                        const val = e.target.value;
+                        setInputValue(val);
+                        // 用户手动修改了文本，更新 baseTextRef 为最新内容
+                        baseTextRef.current = val;
+                        // 标记忽略当前正在传输的 ASR 片段，避免 ASR 的后续更新覆盖用户的修改
+                        ignoreCurrentSegmentRef.current = true;
+                    }}
                     onKeyDown={(e) => e.key === 'Enter' && handleSend()}
                     placeholder={isThinking ? "水华思维星环推演中..." : isRecording ? "正在聆听..." : "输入您的战略指令..."}
                     className="flex-1 bg-transparent border-none focus:outline-none py-4 text-[14px] text-white placeholder:text-slate-600 font-light"
